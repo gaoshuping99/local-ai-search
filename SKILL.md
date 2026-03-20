@@ -62,7 +62,8 @@ description: Natural language search for local files (100G-1T). Supports xlsx, p
 ## 快速验证（已测试）
 
 ```bash
-# 1. 启动 Khoj 服务（SQLite 模式，默认）
+# 1. 启动 Khoj 服务（嵌入式 PostgreSQL 模式）
+export USE_EMBEDDED_DB="true"
 khoj --anonymous-mode
 
 # 2. 转换文档
@@ -144,8 +145,8 @@ curl -X PATCH "http://localhost:42110/api/content" \
           ┌───────────────┴───────────────┐
           ▼                               ▼
 ┌─────────────────────┐       ┌─────────────────────┐
-│   SQLite 数据库      │       │   云端 LLM API      │
-│   ~/.khoj/khoj.db   │       │   多模型支持        │
+│   PostgreSQL 数据库  │       │   云端 LLM API      │
+│   (嵌入式 pgserver) │       │   多模型支持        │
 │   • 向量存储         │       │   • Chat Model      │
 │   • 文档索引         │       │   • 对话生成        │
 │   • ~50-80GB        │       │   • 无本地占用      │
@@ -168,7 +169,7 @@ xlsx/pptx → MarkItDown 转换 → Markdown → Khoj 索引 → 向量数据库
 |---|---|---|
 | **RAG 服务** | Khoj | 成熟（33k stars）、API 友好、内存占用低 |
 | **文档转换** | MarkItDown | 微软开源、支持 xlsx/pptx、保留位置信息 |
-| **向量数据库** | SQLite（嵌入式） | 轻量、无需额外服务、8GB+ RAM 友好 |
+| **向量数据库** | PostgreSQL（嵌入式） | 成熟稳定、pgvector 向量索引、8GB+ RAM 友好 |
 | **Embedding** | 本地模型（sentence-transformers） | 免费、快速、隐私保护 |
 | **LLM** | 云端 API | 解放内存压力、性能更好 |
 
@@ -212,7 +213,8 @@ export ANTHROPIC_API_KEY="sk-xxx"
 #### 3. 启动 Khoj 服务
 
 ```bash
-# SQLite 模式（默认，推荐个人使用）
+# 嵌入式 PostgreSQL 模式（推荐个人使用）
+export USE_EMBEDDED_DB="true"
 khoj --anonymous-mode
 
 # 访问 Web UI
@@ -472,7 +474,7 @@ khoj --regenerate
 
 | 项目 | 说明 |
 |---|---|
-| **本地数据** | 所有向量存储在本地 SQLite |
+| **本地数据** | 所有向量存储在本地 PostgreSQL |
 | **Embedding** | 默认使用本地模型，数据不上传 |
 | **LLM 对话** | 仅查询内容发送到云端 API |
 | **API Key** | 存储在本地环境变量或配置文件 |
@@ -545,7 +547,7 @@ response = requests.post(
 
 ### Q2: 如何处理内存限制？
 
-- 使用 SQLite 嵌入式模式（而非 PostgreSQL）
+- 使用嵌入式 PostgreSQL 模式（USE_EMBEDDED_DB=true）
 - Embedding 使用本地模型（而非云端 API）
 - LLM 使用云端 API（而非本地部署）
 - 分批索引，避免一次性处理大量文件
@@ -584,7 +586,7 @@ tar -xzf khoj_backup.tar.gz -C ~/
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
-| 1.0.2 | 2026-03-20 | 切换到 SQLite 模式，优化内存占用 |
+| 1.0.2 | 2026-03-20 | 澄清数据库类型：Khoj 使用嵌入式 PostgreSQL（非 SQLite） |
 | 1.0.1 | 2026-03-20 | 更新文档：数据规模调整，新增 LLM 支持 |
 | 1.0.0 | 2026-03-20 | 初始版本 |
 

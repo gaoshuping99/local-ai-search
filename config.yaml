@@ -25,10 +25,11 @@ embedding:
   # model: text-embedding-3-small
   # api_key: ${OPENAI_API_KEY}
 
-# 数据库配置
+# 数据库配置（Khoj 使用嵌入式 PostgreSQL）
+# 注意：Khoj 只支持 PostgreSQL，不支持 SQLite
+# 启动时设置: export USE_EMBEDDED_DB="true"
 database:
-  type: sqlite  # 嵌入式模式，轻量级
-  path: ~/.khoj/khoj.db
+  type: postgresql  # 嵌入式 PostgreSQL (pgserver)
 
 # 文档处理配置
 content:

@@ -29,7 +29,8 @@ if ! command -v khoj &> /dev/null; then
     exit 1
 fi
 
-# 启动服务（SQLite 模式）
+# 启动服务（嵌入式 PostgreSQL 模式）
+export USE_EMBEDDED_DB="true"
 
 nohup khoj --anonymous-mode > /tmp/khoj.log 2>&1 &
 
