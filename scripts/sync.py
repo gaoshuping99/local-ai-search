@@ -1,7 +1,7 @@
 #!/opt/anaconda3/bin/python3
 """
 增量同步脚本 - 扫描文件变化并更新 Khoj 知识库
-支持进度显示和增量更新
+支持进度显示、增量更新、多编码支持和错误详情记录
 """
 
 import argparse
@@ -9,10 +9,10 @@ import json
 import os
 import sys
 import time
-import hashlib
+import signal
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Set, Tuple, Optional
 
 try:
     import requests
@@ -32,8 +32,54 @@ except ImportError:
 KHOJ_URL = os.environ.get("KHOJ_URL", "http://localhost:42110")
 KHOJ_API_KEY = os.environ.get("KHOJ_API_KEY", "")
 
-SUPPORTED_FORMATS = {'.xlsx', '.xls', '.pptx', '.ppt', '.docx', '.pdf', '.md', '.txt'}
+SUPPORTED_FORMATS = {'.xlsx', '.xls', '.pptx', '.ppt', '.docx', '.pdf', '.md', '.txt', '.csv'}
 SYNC_STATE_FILE = Path.home() / ".khoj" / "sync_state.json"
+LOG_FILE = Path.home() / ".khoj" / "sync.log"
+
+# 配置
+MAX_FILE_SIZE_MB = 50  # 最大文件大小限制（MB）
+CONVERSION_TIMEOUT = 180  # 转换超时时间（秒）
+API_TIMEOUT = 180  # API 超时时间（秒）
+
+# MIME 类型映射
+MIME_TYPES = {
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.xls': 'application/vnd.ms-excel',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.ppt': 'application/vnd.ms-powerpoint',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.pdf': 'application/pdf',
+    '.md': 'text/markdown',
+    '.txt': 'text/plain',
+    '.csv': 'text/csv',
+}
+
+
+class TimeoutError(Exception):
+    """超时错误"""
+    pass
+
+
+def timeout_handler(signum, frame):
+    """超时信号处理器"""
+    raise TimeoutError("操作超时")
+
+
+def with_timeout(seconds):
+    """超时装饰器"""
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            # 设置信号处理器
+            old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(seconds)
+            try:
+                result = func(*args, **kwargs)
+            finally:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, old_handler)
+            return result
+        return wrapper
+    return decorator
 
 
 class ProgressBar:
@@ -71,15 +117,15 @@ class SyncState:
     def load(self):
         if self.state_file.exists():
             try:
-                with open(self.state_file, 'r') as f:
+                with open(self.state_file, 'r', encoding='utf-8') as f:
                     self.state = json.load(f)
             except:
                 self.state = {}
     
     def save(self):
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(self.state_file, 'w') as f:
-            json.dump(self.state, f, indent=2)
+        with open(self.state_file, 'w', encoding='utf-8') as f:
+            json.dump(self.state, f, indent=2, ensure_ascii=False)
     
     def get_file_hash(self, file_path: Path) -> str:
         """计算文件哈希（修改时间 + 大小）"""
@@ -94,15 +140,20 @@ class SyncState:
         if key not in self.state:
             return True
         
+        # 如果之前失败，应该重试
+        if not self.state[key].get('success', True):
+            return True
+        
         return self.state[key].get('hash') != current_hash
     
-    def mark_synced(self, file_path: Path, success: bool = True):
+    def mark_synced(self, file_path: Path, success: bool = True, error: str = ""):
         """标记文件已同步"""
         key = str(file_path)
         self.state[key] = {
             'hash': self.get_file_hash(file_path),
             'last_sync': datetime.now().isoformat(),
-            'success': success
+            'success': success,
+            'error': error if error else None
         }
     
     def remove_file(self, file_path: Path):
@@ -144,25 +195,42 @@ class KhojSyncClient:
             pass
         return set()
     
-    def index_file(self, file_path: Path, converted_content: str = None) -> bool:
-        """索引单个文件"""
+    def index_file(self, file_path: Path, converted_content: Optional[str] = None, verbose: bool = False) -> Tuple[bool, str]:
+        """索引单个文件
+        
+        Returns:
+            (success, error_message)
+        """
         try:
+            # 获取 MIME 类型
+            ext = file_path.suffix.lower()
+            mime_type = MIME_TYPES.get(ext, 'application/octet-stream')
+            
             if converted_content:
-                files = {'file': (file_path.name, converted_content)}
+                files = {'files': (file_path.name, converted_content, mime_type)}
             else:
                 with open(file_path, 'rb') as f:
-                    files = {'file': (file_path.name, f.read())}
+                    files = {'files': (file_path.name, f.read(), mime_type)}
             
             response = requests.patch(
                 f"{self.base_url}/api/content",
                 headers=self.headers,
                 files=files,
-                timeout=60
+                timeout=API_TIMEOUT
             )
-            return response.status_code == 200
+            
+            if response.status_code == 200:
+                return True, ""
+            else:
+                error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
+                if verbose:
+                    print(f"\n  API 错误: {error_msg}")
+                return False, error_msg
+                
+        except requests.exceptions.Timeout:
+            return False, f"请求超时（{API_TIMEOUT}秒）"
         except Exception as e:
-            print(f"\n  错误: {file_path.name} - {e}")
-            return False
+            return False, str(e)
 
 
 def scan_files(directory: Path) -> List[Path]:
@@ -173,13 +241,67 @@ def scan_files(directory: Path) -> List[Path]:
     return sorted(files)
 
 
-def convert_file(file_path: Path, md: MarkItDown) -> Tuple[bool, str]:
-    """转换单个文件为 Markdown"""
+def read_text_with_fallback(file_path: Path) -> Tuple[bool, str]:
+    """使用多种编码尝试读取文本文件
+    
+    Returns:
+        (success, content_or_error)
+    """
+    encodings = ['utf-8', 'gbk', 'gb2312', 'latin-1']
+    
+    for encoding in encodings:
+        try:
+            content = file_path.read_text(encoding=encoding)
+            return True, content
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+        except Exception as e:
+            return False, f"读取错误: {e}"
+    
+    return False, "无法识别文件编码（尝试了 utf-8, gbk, gb2312, latin-1）"
+
+
+def convert_file_with_timeout(file_path: Path, md: MarkItDown, timeout: int = CONVERSION_TIMEOUT) -> Tuple[bool, str]:
+    """带超时的文件转换
+    
+    Returns:
+        (success, content_or_error)
+    """
     try:
-        result = md.convert(file_path)
-        return True, result.text_content
+        # 设置超时
+        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+        signal.alarm(timeout)
+        
+        try:
+            result = md.convert(file_path)
+            content = result.text_content
+            
+            # 验证内容
+            if not content or len(content.strip()) == 0:
+                return False, "转换结果为空"
+            
+            return True, content
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old_handler)
+            
+    except TimeoutError:
+        return False, f"转换超时（{timeout}秒）- 文件可能太大或太复杂"
     except Exception as e:
-        return False, str(e)
+        return False, f"转换错误: {str(e)[:200]}"
+
+
+def log_message(message: str, level: str = "INFO"):
+    """记录日志"""
+    timestamp = datetime.now().isoformat()
+    log_entry = f"[{timestamp}] [{level}] {message}\n"
+    
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(LOG_FILE, 'a', encoding='utf-8') as f:
+            f.write(log_entry)
+    except:
+        pass
 
 
 def sync_directory(
@@ -198,6 +320,7 @@ def sync_directory(
             'synced': 本次同步数,
             'success': 成功数,
             'failed': 失败数,
+            'skipped': 跳过数,
             'errors': [错误列表]
         }
     """
@@ -245,6 +368,7 @@ def sync_directory(
             'synced': 0,
             'success': 0,
             'failed': 0,
+            'skipped': 0,
             'errors': []
         }
     
@@ -252,58 +376,107 @@ def sync_directory(
     progress = ProgressBar(len(files_to_sync))
     success_count = 0
     failed_count = 0
+    skipped_count = 0
     errors = []
     
     for i, file_path in enumerate(files_to_sync):
         progress.update(i + 1, file_path.name)
         
-        # 转换文件
-        if file_path.suffix.lower() in {'.xlsx', '.xls', '.pptx', '.ppt', '.docx', '.pdf'}:
-            ok, content_or_error = convert_file(file_path, md)
+        # 检查文件大小
+        file_size_mb = file_path.stat().st_size / (1024 * 1024)
+        if file_size_mb > MAX_FILE_SIZE_MB:
+            skip_msg = f"文件过大 ({file_size_mb:.1f}MB > {MAX_FILE_SIZE_MB}MB)"
+            skipped_count += 1
+            errors.append(f"{file_path.name}: {skip_msg}")
+            sync_state.mark_synced(file_path, success=False, error=skip_msg)
+            sync_state.save()
+            log_message(f"跳过: {file_path.name} - {skip_msg}", "WARN")
+            continue
+        
+        # 根据文件类型处理
+        ext = file_path.suffix.lower()
+        
+        if ext in {'.xlsx', '.xls', '.pptx', '.ppt', '.docx', '.pdf'}:
+            # Office/PDF 文件需要转换
+            ok, content_or_error = convert_file_with_timeout(file_path, md)
             if not ok:
                 failed_count += 1
                 errors.append(f"{file_path.name}: {content_or_error}")
-                sync_state.mark_synced(file_path, success=False)
+                sync_state.mark_synced(file_path, success=False, error=content_or_error)
+                sync_state.save()
+                log_message(f"转换失败: {file_path.name} - {content_or_error}", "ERROR")
                 continue
-        else:
-            try:
-                content_or_error = file_path.read_text(encoding='utf-8')
-                ok = True
-            except Exception as e:
+            content = content_or_error
+            
+        elif ext in {'.md', '.txt', '.csv'}:
+            # 文本文件直接读取（支持多种编码）
+            ok, content_or_error = read_text_with_fallback(file_path)
+            if not ok:
                 failed_count += 1
-                errors.append(f"{file_path.name}: {e}")
-                sync_state.mark_synced(file_path, success=False)
+                errors.append(f"{file_path.name}: {content_or_error}")
+                sync_state.mark_synced(file_path, success=False, error=content_or_error)
+                sync_state.save()
+                log_message(f"读取失败: {file_path.name} - {content_or_error}", "ERROR")
                 continue
+            content = content_or_error
+        else:
+            # 不支持的格式
+            skip_msg = f"不支持的格式: {ext}"
+            skipped_count += 1
+            errors.append(f"{file_path.name}: {skip_msg}")
+            sync_state.mark_synced(file_path, success=False, error=skip_msg)
+            sync_state.save()
+            continue
         
         # 索引文件
-        if client.index_file(file_path, content_or_error if file_path.suffix.lower() in {'.xlsx', '.xls', '.pptx', '.ppt', '.docx', '.pdf'} else None):
+        success, error_msg = client.index_file(
+            file_path, 
+            content if ext in {'.xlsx', '.xls', '.pptx', '.ppt', '.docx', '.pdf'} else None,
+            verbose=verbose
+        )
+        
+        if success:
             success_count += 1
             sync_state.mark_synced(file_path, success=True)
+            if verbose:
+                print(f"\n  ✓ {file_path.name}")
+            log_message(f"成功: {file_path.name}", "INFO")
         else:
             failed_count += 1
-            errors.append(f"{file_path.name}: 索引失败")
-            sync_state.mark_synced(file_path, success=False)
+            errors.append(f"{file_path.name}: {error_msg}")
+            sync_state.mark_synced(file_path, success=False, error=error_msg)
+            if verbose:
+                print(f"\n  ✗ {file_path.name}: {error_msg}")
+            log_message(f"索引失败: {file_path.name} - {error_msg}", "ERROR")
         
-        if verbose:
-            print(f"\n  ✓ {file_path.name}")
+        # 每处理完一个文件就保存状态，防止中断丢失
+        sync_state.save()
     
     progress.finish()
     
-    # 保存状态
-    sync_state.save()
-    
     # 输出结果
-    print(f"\n✓ 成功: {success_count}")
-    print(f"✗ 失败: {failed_count}")
+    print(f"\n{'='*50}")
+    print(f"同步结果:")
+    print(f"  ✓ 成功: {success_count}")
+    print(f"  ✗ 失败: {failed_count}")
+    print(f"  ⊘ 跳过: {skipped_count}")
+    print(f"  总计: {success_count + failed_count + skipped_count}")
     
-    if errors and verbose:
-        print("\n错误详情:")
-        for err in errors[:10]:
+    if errors:
+        print(f"\n错误/跳过列表 ({len(errors)} 个):")
+        for err in errors[:20]:
             print(f"  - {err}")
-        if len(errors) > 10:
-            print(f"  ... 还有 {len(errors) - 10} 个错误")
+        if len(errors) > 20:
+            print(f"  ... 还有 {len(errors) - 20} 个")
+    
+    # 计算成功率
+    total_processed = success_count + failed_count + skipped_count
+    if total_processed > 0:
+        success_rate = success_count / total_processed * 100
+        print(f"\n成功率: {success_rate:.1f}%")
     
     print("\n同步完成！")
+    log_message(f"同步完成: 成功 {success_count}, 失败 {failed_count}, 跳过 {skipped_count}", "INFO")
     
     return {
         'total': len(all_files),
@@ -311,6 +484,7 @@ def sync_directory(
         'synced': len(files_to_sync),
         'success': success_count,
         'failed': failed_count,
+        'skipped': skipped_count,
         'errors': errors
     }
 
@@ -321,14 +495,17 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  # 增量同步
+  # 增量同步（只同步有变化的文件）
   python sync.py ~/Documents
   
-  # 全量同步
+  # 全量同步（强制重新索引所有文件）
   python sync.py ~/Documents --full
   
-  # 详细输出
+  # 详细输出（显示每个文件的处理结果）
   python sync.py ~/Documents --verbose
+  
+  # 组合使用
+  python sync.py ~/Documents --full --verbose
 """
     )
     
