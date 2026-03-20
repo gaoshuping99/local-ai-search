@@ -1,3 +1,8 @@
+---
+name: local-ai-search
+description: Natural language search for local files (200GB+). Supports xlsx, pptx, pdf, docx formats with location info. Triggered when user asks to search local/computer/folder content.
+---
+
 # Local AI Search
 
 ## 触发条件
