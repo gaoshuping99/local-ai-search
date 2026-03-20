@@ -1,6 +1,8 @@
 # Khoj RAG 默认配置
 # 复制此文件到 ~/.khoj/config.yml 并根据需要修改
 
+version: "1.0.0"
+
 # LLM 配置
 # 支持的提供商: openai, deepseek, anthropic, gemini, ollama
 llm:
