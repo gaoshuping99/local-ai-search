@@ -184,6 +184,29 @@ xlsx/pptx → MarkItDown 转换 → Markdown → Khoj 索引 → 向量数据库
 - 建议 8GB+ 可用内存
 - 足够的磁盘空间（文档大小的 25-40%）
 
+### 平台支持
+
+| 平台 | 支持状态 | 说明 |
+|------|----------|------|
+| macOS | ✅ 完全支持 | 原生支持，直接使用 |
+| Linux | ✅ 完全支持 | 原生支持，直接使用 |
+| Windows | ⚠️ 需要 WSL2 | 使用 WSL2 运行 Linux 环境 |
+
+#### Windows 用户：安装 WSL2
+
+**WSL2**（Windows Subsystem for Linux 2）让 Windows 可以直接运行 Linux，无需虚拟机或双系统。
+
+```powershell
+# 1. 在 Windows PowerShell（管理员模式）中运行
+wsl --install
+
+# 2. 重启电脑后，打开 "Ubuntu" 应用
+
+# 3. 在 Ubuntu 终端中继续以下安装步骤
+```
+
+安装 WSL2 后，在 Ubuntu 终端中执行所有后续命令。
+
 ### 安装步骤
 
 #### 1. 安装依赖
@@ -586,6 +609,7 @@ tar -xzf khoj_backup.tar.gz -C ~/
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| 1.0.4 | 2026-03-20 | 添加 Windows 平台说明（需要 WSL2） |
 | 1.0.3 | 2026-03-20 | 澄清数据库类型：Khoj 使用嵌入式 PostgreSQL（非 SQLite） |
 | 1.0.1 | 2026-03-20 | 更新文档：数据规模调整，新增 LLM 支持 |
 | 1.0.0 | 2026-03-20 | 初始版本 |
