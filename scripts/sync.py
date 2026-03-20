@@ -43,7 +43,7 @@ SYNC_STATE_FILE = Path.home() / ".khoj" / "sync_state.json"
 LOG_FILE = Path.home() / ".khoj" / "sync.log"
 
 # 配置
-MAX_FILE_SIZE_MB = 500  # 最大文件大小限制（MB）
+MAX_FILE_SIZE_MB = 1000  # 最大文件大小限制（MB）
 CONVERSION_TIMEOUT = 600  # 转换超时时间（秒）
 API_TIMEOUT = 600  # API 超时时间（秒）
 
