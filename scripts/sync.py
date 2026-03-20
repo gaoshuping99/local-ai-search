@@ -28,6 +28,12 @@ except ImportError:
     print("请运行: pip install 'markitdown[xlsx,pptx]'")
     sys.exit(1)
 
+try:
+    import base64
+    HAS_BASE64 = True
+except ImportError:
+    HAS_BASE64 = False
+
 
 KHOJ_URL = os.environ.get("KHOJ_URL", "http://localhost:42110")
 KHOJ_API_KEY = os.environ.get("KHOJ_API_KEY", "")
@@ -37,9 +43,14 @@ SYNC_STATE_FILE = Path.home() / ".khoj" / "sync_state.json"
 LOG_FILE = Path.home() / ".khoj" / "sync.log"
 
 # 配置
-MAX_FILE_SIZE_MB = 100  # 最大文件大小限制（MB）
-CONVERSION_TIMEOUT = 300  # 转换超时时间（秒）
-API_TIMEOUT = 300  # API 超时时间（秒）
+MAX_FILE_SIZE_MB = 500  # 最大文件大小限制（MB）
+CONVERSION_TIMEOUT = 600  # 转换超时时间（秒）
+API_TIMEOUT = 600  # API 超时时间（秒）
+
+# 多模态模型配置（用于处理扫描版PDF）
+VISION_API_KEY = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "") or os.environ.get("CUSTOM_LLM_API_KEY", "")
+VISION_PROVIDER = os.environ.get("VISION_PROVIDER", "gemini")  # gemini or openai
+VISION_MODEL = os.environ.get("VISION_MODEL", "gemini-2.0-flash")
 
 # MIME 类型映射
 MIME_TYPES = {
@@ -278,6 +289,9 @@ def convert_file_with_timeout(file_path: Path, md: MarkItDown, timeout: int = CO
             
             # 验证内容
             if not content or len(content.strip()) == 0:
+                # 如果是PDF且内容为空，可能是扫描版PDF，尝试多模态处理
+                if file_path.suffix.lower() == '.pdf':
+                    return process_scanned_pdf_with_vision(file_path)
                 return False, "转换结果为空"
             
             return True, content
@@ -293,6 +307,152 @@ def convert_file_with_timeout(file_path: Path, md: MarkItDown, timeout: int = CO
         if 'Fill' in error_str or 'TypeError' in error_str:
             return try_xlsx_with_pandas(file_path)
         return False, f"转换错误: {error_str[:200]}"
+
+
+def process_scanned_pdf_with_vision(file_path: Path) -> Tuple[bool, str]:
+    """使用多模态大模型处理扫描版PDF
+    
+    将PDF页面转换为图片，然后使用Vision模型提取文本内容
+    
+    Returns:
+        (success, content_or_error)
+    """
+    try:
+        import base64
+        import io
+        
+        # 检查API配置
+        if not VISION_API_KEY:
+            return False, "扫描版PDF需要配置 GEMINI_API_KEY 或 OPENAI_API_KEY 环境变量"
+        
+        # 使用 pdf2image 将PDF转换为图片
+        try:
+            from pdf2image import convert_from_path
+        except ImportError:
+            return False, "需要安装 pdf2image: pip install pdf2image"
+        
+        # 转换PDF为图片（限制最多10页）
+        pages = convert_from_path(file_path, first_page=1, last_page=10, dpi=150)
+        
+        if not pages:
+            return False, "PDF无法转换为图片"
+        
+        content_parts = []
+        
+        for i, page_image in enumerate(pages, 1):
+            # 将图片转换为base64
+            img_buffer = io.BytesIO()
+            page_image.save(img_buffer, format='JPEG', quality=85)
+            img_base64 = base64.b64encode(img_buffer.getvalue()).decode('utf-8')
+            
+            # 根据provider调用不同的API
+            if VISION_PROVIDER == "gemini":
+                text = call_gemini_vision(img_base64, i)
+            else:
+                text = call_openai_vision(img_base64, i)
+            
+            if text:
+                content_parts.append(f"## Page {i}\n\n{text}\n\n")
+            else:
+                content_parts.append(f"## Page {i}\n\n[OCR处理失败]\n\n")
+        
+        if not content_parts:
+            return False, "多模态处理未能提取任何内容"
+        
+        content = "".join(content_parts)
+        return True, content
+        
+    except Exception as e:
+        return False, f"多模态处理错误: {str(e)[:100]}"
+
+
+def call_gemini_vision(img_base64: str, page_num: int) -> str:
+    """调用 Gemini Vision API"""
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{VISION_MODEL}:generateContent?key={VISION_API_KEY}"
+        
+        payload = {
+            "contents": [
+                {
+                    "parts": [
+                        {
+                            "text": f"请提取这张PDF页面（第{page_num}页）中的所有文字内容。只输出文字，不要添加任何解释或评论。如果是表格，请用markdown表格格式输出。"
+                        },
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": img_base64
+                            }
+                        }
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "maxOutputTokens": 4000
+            }
+        }
+        
+        response = requests.post(url, json=payload, timeout=60)
+        
+        if response.status_code == 200:
+            result = response.json()
+            candidates = result.get("candidates", [])
+            if candidates:
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if parts:
+                    return parts[0].get("text", "")
+        
+        return ""
+    except Exception as e:
+        return ""
+
+
+def call_openai_vision(img_base64: str, page_num: int) -> str:
+    """调用 OpenAI Vision API"""
+    try:
+        base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        
+        headers = {
+            "Authorization": f"Bearer {VISION_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": VISION_MODEL,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"请提取这张PDF页面（第{page_num}页）中的所有文字内容。只输出文字，不要添加任何解释或评论。如果是表格，请用markdown表格格式输出。"
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{img_base64}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            "max_tokens": 4000
+        }
+        
+        response = requests.post(
+            f"{base_url}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=60
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            return result.get("choices", [{}])[0].get("message", {}).get("content", "")
+        
+        return ""
+    except Exception as e:
+        return ""
 
 
 def try_xlsx_with_pandas(file_path: Path) -> Tuple[bool, str]:
