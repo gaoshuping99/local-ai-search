@@ -62,10 +62,7 @@ description: Natural language search for local files (100G-1T). Supports xlsx, p
 ## 快速验证（已测试）
 
 ```bash
-# 1. 启动 Khoj 服务（嵌入式模式）
-export KHOJ_ADMIN_EMAIL="admin@khoj.local"
-export KHOJ_ADMIN_PASSWORD="khoj123"
-export USE_EMBEDDED_DB="true"
+# 1. 启动 Khoj 服务（SQLite 模式，默认）
 khoj --anonymous-mode
 
 # 2. 转换文档
@@ -215,8 +212,8 @@ export ANTHROPIC_API_KEY="sk-xxx"
 #### 3. 启动 Khoj 服务
 
 ```bash
-# 嵌入式模式（SQLite，推荐个人使用）
-USE_EMBEDDED_DB="true" khoj --anonymous-mode
+# SQLite 模式（默认，推荐个人使用）
+khoj --anonymous-mode
 
 # 访问 Web UI
 open http://localhost:42110
@@ -587,6 +584,8 @@ tar -xzf khoj_backup.tar.gz -C ~/
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| 1.0.2 | 2026-03-20 | 切换到 SQLite 模式，优化内存占用 |
+| 1.0.1 | 2026-03-20 | 更新文档：数据规模调整，新增 LLM 支持 |
 | 1.0.0 | 2026-03-20 | 初始版本 |
 
 ---
