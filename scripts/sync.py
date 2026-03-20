@@ -37,9 +37,9 @@ SYNC_STATE_FILE = Path.home() / ".khoj" / "sync_state.json"
 LOG_FILE = Path.home() / ".khoj" / "sync.log"
 
 # 配置
-MAX_FILE_SIZE_MB = 50  # 最大文件大小限制（MB）
-CONVERSION_TIMEOUT = 180  # 转换超时时间（秒）
-API_TIMEOUT = 180  # API 超时时间（秒）
+MAX_FILE_SIZE_MB = 100  # 最大文件大小限制（MB）
+CONVERSION_TIMEOUT = 300  # 转换超时时间（秒）
+API_TIMEOUT = 300  # API 超时时间（秒）
 
 # MIME 类型映射
 MIME_TYPES = {
@@ -288,7 +288,95 @@ def convert_file_with_timeout(file_path: Path, md: MarkItDown, timeout: int = CO
     except TimeoutError:
         return False, f"转换超时（{timeout}秒）- 文件可能太大或太复杂"
     except Exception as e:
-        return False, f"转换错误: {str(e)[:200]}"
+        error_str = str(e)
+        # 检查是否是 xlsx 样式错误，尝试用 pandas 回退
+        if 'Fill' in error_str or 'TypeError' in error_str:
+            return try_xlsx_with_pandas(file_path)
+        return False, f"转换错误: {error_str[:200]}"
+
+
+def try_xlsx_with_pandas(file_path: Path) -> Tuple[bool, str]:
+    """使用直接 XML 提取读取 xlsx 文件（作为 markitdown 的回退方案）
+    
+    用于处理样式损坏的 xlsx 文件，直接从 ZIP 中提取数据
+    
+    Returns:
+        (success, content_or_error)
+    """
+    try:
+        import zipfile
+        import xml.etree.ElementTree as ET
+        
+        ns = {'ns': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+        
+        with zipfile.ZipFile(file_path, 'r') as z:
+            # 读取共享字符串
+            shared_strings = []
+            shared_strings_file = 'xl/sharedStrings.xml'
+            if shared_strings_file in z.namelist():
+                with z.open(shared_strings_file) as f:
+                    for event, elem in ET.iterparse(f):
+                        if elem.tag == '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t':
+                            shared_strings.append(elem.text or '')
+                        elem.clear()
+            
+            # 读取工作表
+            content_parts = []
+            max_rows = 500  # 限制行数
+            max_cols = 50   # 限制列数
+            
+            for name in sorted(z.namelist()):
+                if name.startswith('xl/worksheets/') and name.endswith('.xml'):
+                    sheet_name = name.split('/')[-1].replace('.xml', '')
+                    content_parts.append(f"## {sheet_name}\n")
+                    
+                    with z.open(name) as f:
+                        tree = ET.parse(f)
+                        root = tree.getroot()
+                        
+                        rows = root.findall('.//ns:row', ns)
+                        rows_content = []
+                        
+                        for i, row in enumerate(rows):
+                            if i >= max_rows:
+                                rows_content.append(f"... (truncated at {max_rows} rows)")
+                                break
+                            
+                            cells = row.findall('ns:c', ns)
+                            row_values = []
+                            
+                            for j, cell in enumerate(cells):
+                                if j >= max_cols:
+                                    break
+                                
+                                cell_type = cell.get('t', '')
+                                value_elem = cell.find('ns:v', ns)
+                                
+                                if value_elem is not None:
+                                    value = value_elem.text or ''
+                                    if cell_type == 's' and value.isdigit():
+                                        idx = int(value)
+                                        if idx < len(shared_strings):
+                                            value = shared_strings[idx]
+                                    row_values.append(value[:100])  # 限制单元格内容长度
+                                else:
+                                    row_values.append('')
+                            
+                            if row_values:
+                                rows_content.append(' | '.join(row_values))
+                        
+                        if rows_content:
+                            content_parts.append('\n'.join(rows_content))
+                        content_parts.append("\n")
+            
+            if not content_parts:
+                return False, "工作表为空"
+            
+            content = "\n".join(content_parts)
+            return True, content
+            
+    except Exception as e:
+        return False, f"XML 提取失败: {str(e)[:100]}"
 
 
 def log_message(message: str, level: str = "INFO"):
