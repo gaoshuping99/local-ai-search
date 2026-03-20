@@ -2,6 +2,7 @@
 """
 Khoj RAG CLI 封装
 提供简洁的命令行接口操作 Khoj 知识库
+v1.1.0 - 新增增量同步、进度显示功能
 """
 
 import os
@@ -9,8 +10,9 @@ import sys
 import json
 import subprocess
 import signal
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 import requests
 import click
@@ -59,8 +61,8 @@ class KhojClient:
         response.raise_for_status()
         return response.json()
     
-    def index_files(self, directory: str) -> dict:
-        """索引文件"""
+    def index_files(self, directory: str, progress_callback: Callable = None) -> dict:
+        """索引文件（支持进度回调）"""
         dir_path = Path(directory).expanduser()
         if not dir_path.exists():
             raise FileNotFoundError(f"目录不存在: {directory}")
@@ -70,19 +72,37 @@ class KhojClient:
             files.extend(dir_path.rglob(ext))
         
         if not files:
-            return {"status": "no_files", "count": 0}
+            return {"status": "no_files", "count": 0, "success": 0, "failed": 0}
+        
+        success_count = 0
+        failed_count = 0
+        total = len(files)
         
         # 通过 API 上传文件
-        for file_path in files:
-            with open(file_path, "rb") as f:
-                response = requests.patch(
-                    f"{self.base_url}/api/content",
-                    headers=self.headers,
-                    files={"file": (file_path.name, f)}
-                )
-                response.raise_for_status()
+        for i, file_path in enumerate(files):
+            try:
+                with open(file_path, "rb") as f:
+                    response = requests.patch(
+                        f"{self.base_url}/api/content",
+                        headers=self.headers,
+                        files={"file": (file_path.name, f)},
+                        timeout=60
+                    )
+                    response.raise_for_status()
+                    success_count += 1
+            except Exception as e:
+                failed_count += 1
+            
+            # 进度回调
+            if progress_callback:
+                progress_callback(i + 1, total, file_path.name, success_count, failed_count)
         
-        return {"status": "success", "count": len(files)}
+        return {
+            "status": "success",
+            "count": len(files),
+            "success": success_count,
+            "failed": failed_count
+        }
 
 
 # CLI 命令
@@ -208,20 +228,36 @@ def convert(input_dir: str, output: Optional[str]):
 
 @cli.command()
 @click.argument("directory")
-@click.option("--wait", is_flag=True, help="等待索引完成")
-def index(directory: str, wait: bool):
-    """索引文件到知识库"""
+@click.option("--progress", is_flag=True, help="显示进度")
+def index(directory: str, progress: bool):
+    """索引文件到知识库（支持进度显示）"""
     client = KhojClient()
     
     if not client.is_running():
         click.echo("✗ Khoj 服务未运行，请先执行: rag start", err=True)
         sys.exit(1)
     
+    def show_progress(current: int, total: int, filename: str, success: int, failed: int):
+        """进度显示回调"""
+        percent = current / total * 100 if total > 0 else 0
+        bar_width = 30
+        filled = int(bar_width * current / total) if total > 0 else 0
+        bar = '=' * filled + '>' + ' ' * (bar_width - filled - 1)
+        click.echo(f"\r[{bar}] {percent:.1f}% ({current}/{total}) {filename[:25]}", nl=False)
+    
     try:
-        result = client.index_files(directory)
-        click.echo(f"✓ 已索引 {result['count']} 个文件")
+        callback = show_progress if progress else None
+        result = client.index_files(directory, callback)
+        
+        if progress:
+            click.echo()  # 换行
+        
+        click.echo(f"\n✓ 成功: {result.get('success', result['count'])}")
+        if result.get('failed', 0) > 0:
+            click.echo(f"✗ 失败: {result['failed']}")
+        click.echo(f"总计: {result['count']} 个文件")
     except Exception as e:
-        click.echo(f"✗ 索引失败: {e}", err=True)
+        click.echo(f"\n✗ 索引失败: {e}", err=True)
         sys.exit(1)
 
 
@@ -274,6 +310,74 @@ def clean(converted: bool):
             click.echo(f"✓ 已清理: {converted_path}")
         else:
             click.echo("转换目录不存在")
+
+
+@cli.command()
+@click.argument("directory")
+@click.option("--full", is_flag=True, help="强制全量同步")
+@click.option("-v", "--verbose", is_flag=True, help="详细输出")
+def sync(directory: str, full: bool, verbose: bool):
+    """增量同步目录到知识库（带进度显示）"""
+    script_path = Path(__file__).parent / "scripts" / "sync.py"
+    
+    if not script_path.exists():
+        click.echo(f"✗ 同步脚本不存在: {script_path}", err=True)
+        sys.exit(1)
+    
+    cmd = ["python3", str(script_path), directory]
+    if full:
+        cmd.append("--full")
+    if verbose:
+        cmd.append("--verbose")
+    
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        click.echo(f"✗ 同步失败: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument("directory", required=False)
+@click.option("--enable", is_flag=True, help="启用定时同步")
+@click.option("--disable", is_flag=True, help="禁用定时同步")
+@click.option("--status", is_flag=True, help="查看定时同步状态")
+@click.option("--interval", default=1, help="同步间隔（小时）")
+@click.option("--run", is_flag=True, help="立即执行一次同步")
+def schedule(directory: str, enable: bool, disable: bool, status: bool, interval: int, run: bool):
+    """管理定时同步任务"""
+    script_path = Path(__file__).parent / "scripts" / "schedule_sync.sh"
+    
+    if not script_path.exists():
+        click.echo(f"✗ 调度脚本不存在: {script_path}", err=True)
+        sys.exit(1)
+    
+    cmd = [str(script_path)]
+    
+    if status:
+        cmd.append("--status")
+    elif enable:
+        if not directory:
+            click.echo("✗ 请指定要同步的目录", err=True)
+            sys.exit(1)
+        cmd.extend([directory, "--enable", "--interval", str(interval)])
+    elif disable:
+        cmd.append("--disable")
+    elif run:
+        if not directory:
+            click.echo("✗ 请指定要同步的目录", err=True)
+            sys.exit(1)
+        cmd.extend([directory, "--run"])
+    elif directory:
+        cmd.extend([directory, "--run"])
+    else:
+        cmd.append("--status")
+    
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        click.echo(f"✗ 执行失败: {e}", err=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

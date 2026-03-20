@@ -259,6 +259,8 @@ open http://localhost:42110
 | `rag index <dir>` | 索引文件到知识库 | `rag index ~/Documents/converted` |
 | `rag query "<问题>"` | 查询知识库 | `rag query "第三季度销售数据"` |
 | `rag clean` | 清理转换后的临时文件 | `rag clean` |
+| `rag sync` | 增量同步目录到知识库 | `rag sync ~/Documents` |
+| `rag schedule` | 管理定时同步任务 | `rag schedule ~/Documents --enable` |
 
 ### 文档转换
 
@@ -562,6 +564,101 @@ response = requests.post(
 
 ---
 
+## 增量同步
+
+### 手动触发同步
+
+当文件有更新时，可以手动触发增量同步：
+
+```bash
+# 增量同步（只处理变化的文件）
+~/.agents/skills/local-ai-search/scripts/sync.py ~/Documents
+
+# 全量同步（强制重新索引所有文件）
+~/.agents/skills/local-ai-search/scripts/sync.py ~/Documents --full
+
+# 详细输出
+~/.agents/skills/local-ai-search/scripts/sync.py ~/Documents --verbose
+```
+
+或使用 CLI：
+
+```bash
+# 增量同步
+local-ai-search sync ~/Documents
+
+# 全量同步
+local-ai-search sync ~/Documents --full
+```
+
+### 定时自动同步
+
+设置每小时自动同步：
+
+```bash
+# 启用定时同步（每小时）
+~/.agents/skills/local-ai-search/scripts/schedule_sync.sh ~/Documents --enable
+
+# 启用定时同步（每2小时）
+~/.agents/skills/local-ai-search/scripts/schedule_sync.sh ~/Documents --enable --interval 2
+
+# 查看定时同步状态
+~/.agents/skills/local-ai-search/scripts/schedule_sync.sh --status
+
+# 禁用定时同步
+~/.agents/skills/local-ai-search/scripts/schedule_sync.sh --disable
+
+# 立即执行一次同步
+~/.agents/skills/local-ai-search/scripts/schedule_sync.sh ~/Documents --run
+```
+
+或使用 CLI：
+
+```bash
+# 启用定时同步
+local-ai-search schedule ~/Documents --enable
+
+# 设置每2小时同步
+local-ai-search schedule ~/Documents --enable --interval 2
+
+# 查看状态
+local-ai-search schedule --status
+
+# 禁用定时同步
+local-ai-search schedule --disable
+```
+
+### 进度显示
+
+在大规模索引时会显示进度：
+
+```
+扫描目录: ~/Documents
+找到文件: 150 个
+已索引: 120 个
+需要同步: 30 个
+
+[=============>         ] 60.0% (18/30) report.xlsx
+✓ 成功: 28
+✗ 失败: 2
+
+同步完成！
+```
+
+### 同步原理
+
+增量同步通过以下方式判断文件变化：
+
+| 检查项 | 说明 |
+|--------|------|
+| 文件修改时间 | 文件被修改时时间会变化 |
+| 文件大小 | 内容变化时大小会变化 |
+| 已索引文件列表 | 对比 Khoj 已索引的文件 |
+
+同步状态保存在 `~/.khoj/sync_state.json`，记录每个文件的同步状态。
+
+---
+
 ## 常见问题
 
 ### Q1: 索引完成后可以删除 Markdown 文件吗？
@@ -609,6 +706,7 @@ tar -xzf khoj_backup.tar.gz -C ~/
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| 1.1.0 | 2026-03-20 | 新增增量同步、定时同步、进度显示功能 |
 | 1.0.4 | 2026-03-20 | 添加 Windows 平台说明（需要 WSL2） |
 | 1.0.3 | 2026-03-20 | 澄清数据库类型：Khoj 使用嵌入式 PostgreSQL（非 SQLite） |
 | 1.0.1 | 2026-03-20 | 更新文档：数据规模调整，新增 LLM 支持 |
