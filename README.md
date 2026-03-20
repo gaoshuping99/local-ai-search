@@ -1,6 +1,6 @@
 # Local AI Search
 
-> 本地知识库 AI 搜索，支持 200GB+ 文件的全文检索和自然语言查询
+> 本地知识库 AI 搜索，支持 100G-1T 文件的全文检索和自然语言查询
 
 [![Skill](https://img.shields.io/badge/Skill-Local%20AI%20Search-blue)](https://github.com/khoj-ai/khoj)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
@@ -48,12 +48,12 @@ local-ai-search query "第三季度销售数据"
 
 ## 特性
 
-- ✅ 支持 200GB+ 大规模文件
+- ✅ 支持 100G-1T 大规模文件
 - ✅ 支持 xlsx, pptx, pdf, docx, md 等格式
 - ✅ 自然语言查询
 - ✅ 云端 LLM API（无需本地大模型）
 - ✅ 精确定位到源文件位置
-- ✅ 轻量级部署（16GB RAM 友好）
+- ✅ 轻量级部署（8GB+ RAM 友好）
 - ✅ 内存占用仅 ~70MB
 
 ## 文件结构

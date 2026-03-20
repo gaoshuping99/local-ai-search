@@ -1,6 +1,6 @@
 ---
 name: local-ai-search
-description: Natural language search for local files (200GB+). Supports xlsx, pptx, pdf, docx formats with location info. Triggered when user asks to search local/computer/folder content.
+description: Natural language search for local files (100G-1T). Supports xlsx, pptx, pdf, docx formats with location info. Triggered when user asks to search local/computer/folder content.
 ---
 
 # Local AI Search
@@ -95,7 +95,7 @@ curl -X PATCH "http://localhost:42110/api/content" \
 
 ## 概述
 
-基于 Khoj 的本地 RAG 知识库解决方案，支持大规模文件（200GB+）的全文检索和自然语言查询。通过 MarkItDown 转换 Office 文档，结合云端 LLM API 实现轻量级部署，适合资源受限环境。
+基于 Khoj 的本地 RAG 知识库解决方案，支持大规模文件（100G到1T）的全文检索和自然语言查询。通过 MarkItDown 转换 Office 文档，结合云端 LLM API 实现轻量级部署，适合资源受限环境。
 
 ---
 
@@ -105,10 +105,10 @@ curl -X PATCH "http://localhost:42110/api/content" \
 
 | 需求项 | 具体要求 |
 |---|---|
-| **数据规模** | 200GB 本地文件 |
+| **数据规模** | 建议小于1T的数据量，例如200GB 本地文件 |
 | **文件格式** | xlsx, pptx, pdf, docx, md 等 |
 | **检索方式** | 自然语言查询 |
-| **大模型** | 云端 API（OpenAI/DeepSeek/Claude） |
+| **大模型** | 云端 API（OpenAI/DeepSeek/Claude/Qwen/Kimi/Minmax） |
 | **定位精度** | 来源文件 + 大致位置（工作表/幻灯片） |
 | **集成方式** | 封装为 OpenCode Skill |
 
@@ -116,9 +116,9 @@ curl -X PATCH "http://localhost:42110/api/content" \
 
 | 约束项 | 配置 |
 |---|---|
-| **设备** | MacBook Air M2（或同等配置） |
-| **内存** | 16GB |
-| **剩余空间** | ~100GB |
+| **设备** | 常规个人PC，例如MacBook Air M2 |
+| **内存** | 8GB+ 可用内存 |
+| **剩余空间** | 足够的磁盘空间（文档大小的 25-40%）。例如200G的文件，需要有80GB空闲空间，支持本地向量数据库存储RAG结果。 |
 | **本地 LLM** | 无法部署（资源不足） |
 
 ---
@@ -148,7 +148,7 @@ curl -X PATCH "http://localhost:42110/api/content" \
           ▼                               ▼
 ┌─────────────────────┐       ┌─────────────────────┐
 │   SQLite 数据库      │       │   云端 LLM API      │
-│   ~/.khoj/khoj.db   │       │   DeepSeek/OpenAI   │
+│   ~/.khoj/khoj.db   │       │   多模型支持        │
 │   • 向量存储         │       │   • Chat Model      │
 │   • 文档索引         │       │   • 对话生成        │
 │   • ~50-80GB        │       │   • 无本地占用      │
@@ -171,7 +171,7 @@ xlsx/pptx → MarkItDown 转换 → Markdown → Khoj 索引 → 向量数据库
 |---|---|---|
 | **RAG 服务** | Khoj | 成熟（33k stars）、API 友好、内存占用低 |
 | **文档转换** | MarkItDown | 微软开源、支持 xlsx/pptx、保留位置信息 |
-| **向量数据库** | SQLite（嵌入式） | 轻量、无需额外服务、16GB RAM 友好 |
+| **向量数据库** | SQLite（嵌入式） | 轻量、无需额外服务、8GB+ RAM 友好 |
 | **Embedding** | 本地模型（sentence-transformers） | 免费、快速、隐私保护 |
 | **LLM** | 云端 API | 解放内存压力、性能更好 |
 
@@ -377,7 +377,7 @@ Q3 Sales Summary: Total $165,000
 
 | 指标 | 数值 | 说明 |
 |---|---|---|
-| **索引速度** | ~1-2GB/小时 | M2 MacBook Air |
+| **索引速度** | ~1-2GB/小时 | 常规个人PC |
 | **查询响应** | 50-200ms | 向量检索 |
 | **对话生成** | 1-3秒 | 取决于云端 API |
 | **内存占用** | ~200-500MB | 空闲时 |
@@ -395,6 +395,9 @@ Q3 Sales Summary: Total $165,000
 | **DeepSeek** | `OPENAI_API_KEY` + `OPENAI_BASE_URL` | deepseek-chat, deepseek-reasoner |
 | **Anthropic** | `ANTHROPIC_API_KEY` | claude-3-5-sonnet |
 | **Google** | `GEMINI_API_KEY` | gemini-2.0-flash |
+| **Qwen/通义** | `OPENAI_API_KEY` + `OPENAI_BASE_URL` | qwen-turbo, qwen-plus |
+| **Kimi/月之暗面** | `OPENAI_API_KEY` + `OPENAI_BASE_URL` | moonshot-v1-8k |
+| **Minimax** | `OPENAI_API_KEY` + `OPENAI_BASE_URL` | abab6.5-chat |
 | **本地 Ollama** | - | llama3, qwen2.5 |
 
 ### 配置文件示例
@@ -543,7 +546,7 @@ response = requests.post(
 
 **可以**。Khoj 已将内容存入向量数据库，Markdown 文件仅作为临时转换产物，索引完成后可安全删除，节省 20-40GB 空间。
 
-### Q2: 如何处理 16GB 内存的限制？
+### Q2: 如何处理内存限制？
 
 - 使用 SQLite 嵌入式模式（而非 PostgreSQL）
 - Embedding 使用本地模型（而非云端 API）
