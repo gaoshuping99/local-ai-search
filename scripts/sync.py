@@ -38,7 +38,7 @@ except ImportError:
 KHOJ_URL = os.environ.get("KHOJ_URL", "http://localhost:42110")
 KHOJ_API_KEY = os.environ.get("KHOJ_API_KEY", "")
 
-SUPPORTED_FORMATS = {'.xlsx', '.xls', '.pptx', '.ppt', '.docx', '.pdf', '.md', '.txt', '.csv'}
+SUPPORTED_FORMATS = {'.xlsx', '.xls', '.pptx', '.ppt', '.docx', '.doc', '.pdf', '.md', '.txt', '.csv'}
 SYNC_STATE_FILE = Path.home() / ".khoj" / "sync_state.json"
 LOG_FILE = Path.home() / ".khoj" / "sync.log"
 
@@ -47,10 +47,10 @@ MAX_FILE_SIZE_MB = 1000  # 最大文件大小限制（MB）
 CONVERSION_TIMEOUT = 600  # 转换超时时间（秒）
 API_TIMEOUT = 600  # API 超时时间（秒）
 
-# 多模态模型配置（用于处理扫描版PDF）
-VISION_API_KEY = os.environ.get("GEMINI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "") or os.environ.get("CUSTOM_LLM_API_KEY", "")
-VISION_PROVIDER = os.environ.get("VISION_PROVIDER", "gemini")  # gemini or openai
-VISION_MODEL = os.environ.get("VISION_MODEL", "gemini-2.0-flash")
+# 本地 OCR 配置（使用 Tesseract，无需云 API）
+OCR_LANGUAGES = os.environ.get("OCR_LANGUAGES", "chi_sim+eng")  # 中文简体 + 英文
+OCR_DPI = int(os.environ.get("OCR_DPI", "200"))  # OCR 分辨率
+OCR_MAX_PAGES = int(os.environ.get("OCR_MAX_PAGES", "20"))  # 最大处理页数
 
 # MIME 类型映射
 MIME_TYPES = {
@@ -59,6 +59,7 @@ MIME_TYPES = {
     '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     '.ppt': 'application/vnd.ms-powerpoint',
     '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.doc': 'application/msword',
     '.pdf': 'application/pdf',
     '.md': 'text/markdown',
     '.txt': 'text/plain',
@@ -289,9 +290,9 @@ def convert_file_with_timeout(file_path: Path, md: MarkItDown, timeout: int = CO
             
             # 验证内容
             if not content or len(content.strip()) == 0:
-                # 如果是PDF且内容为空，可能是扫描版PDF，尝试多模态处理
+                # 如果是PDF且内容为空，可能是扫描版PDF，尝试本地OCR处理
                 if file_path.suffix.lower() == '.pdf':
-                    return process_scanned_pdf_with_vision(file_path)
+                    return process_scanned_pdf_with_ocr(file_path)
                 return False, "转换结果为空"
             
             return True, content
@@ -309,150 +310,110 @@ def convert_file_with_timeout(file_path: Path, md: MarkItDown, timeout: int = CO
         return False, f"转换错误: {error_str[:200]}"
 
 
-def process_scanned_pdf_with_vision(file_path: Path) -> Tuple[bool, str]:
-    """使用多模态大模型处理扫描版PDF
+def process_scanned_pdf_with_ocr(file_path: Path) -> Tuple[bool, str]:
+    """使用本地 OCR (Tesseract) 处理扫描版 PDF
     
-    将PDF页面转换为图片，然后使用Vision模型提取文本内容
+    将 PDF 页面转换为图片，然后使用 Tesseract OCR 提取文本内容
+    无需云 API，完全本地运行
     
     Returns:
         (success, content_or_error)
     """
     try:
-        import base64
-        import io
-        
-        # 检查API配置
-        if not VISION_API_KEY:
-            return False, "扫描版PDF需要配置 GEMINI_API_KEY 或 OPENAI_API_KEY 环境变量"
-        
-        # 使用 pdf2image 将PDF转换为图片
+        # 使用 pdf2image 将 PDF 转换为图片
         try:
             from pdf2image import convert_from_path
         except ImportError:
             return False, "需要安装 pdf2image: pip install pdf2image"
         
-        # 转换PDF为图片（限制最多10页）
-        pages = convert_from_path(file_path, first_page=1, last_page=10, dpi=150)
+        # 使用 pytesseract 进行 OCR
+        try:
+            import pytesseract
+        except ImportError:
+            return False, "需要安装 pytesseract: pip install pytesseract"
+        
+        # 转换 PDF 为图片
+        pages = convert_from_path(
+            file_path, 
+            first_page=1, 
+            last_page=OCR_MAX_PAGES, 
+            dpi=OCR_DPI
+        )
         
         if not pages:
-            return False, "PDF无法转换为图片"
+            return False, "PDF 无法转换为图片"
         
         content_parts = []
         
         for i, page_image in enumerate(pages, 1):
-            # 将图片转换为base64
-            img_buffer = io.BytesIO()
-            page_image.save(img_buffer, format='JPEG', quality=85)
-            img_base64 = base64.b64encode(img_buffer.getvalue()).decode('utf-8')
-            
-            # 根据provider调用不同的API
-            if VISION_PROVIDER == "gemini":
-                text = call_gemini_vision(img_base64, i)
-            else:
-                text = call_openai_vision(img_base64, i)
-            
-            if text:
-                content_parts.append(f"## Page {i}\n\n{text}\n\n")
-            else:
-                content_parts.append(f"## Page {i}\n\n[OCR处理失败]\n\n")
+            # 使用 Tesseract 进行 OCR
+            try:
+                text = pytesseract.image_to_string(
+                    page_image, 
+                    lang=OCR_LANGUAGES
+                )
+                
+                if text and text.strip():
+                    content_parts.append(f"## Page {i}\n\n{text.strip()}\n\n")
+                else:
+                    content_parts.append(f"## Page {i}\n\n[OCR 未识别到文字]\n\n")
+            except Exception as e:
+                content_parts.append(f"## Page {i}\n\n[OCR 处理错误: {str(e)[:50]}]\n\n")
         
         if not content_parts:
-            return False, "多模态处理未能提取任何内容"
+            return False, "OCR 未能提取任何内容"
         
         content = "".join(content_parts)
         return True, content
         
     except Exception as e:
-        return False, f"多模态处理错误: {str(e)[:100]}"
+        return False, f"OCR 处理错误: {str(e)[:100]}"
 
 
-def call_gemini_vision(img_base64: str, page_num: int) -> str:
-    """调用 Gemini Vision API"""
+def convert_doc_with_libreoffice(file_path: Path) -> Tuple[bool, str]:
+    """使用 LibreOffice 将 .doc 文件转换为文本
+    
+    Returns:
+        (success, content_or_error)
+    """
+    import subprocess
+    import tempfile
+    import shutil
+    
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{VISION_MODEL}:generateContent?key={VISION_API_KEY}"
+        # 检查 LibreOffice 是否可用
+        soffice_path = shutil.which('soffice')
+        if not soffice_path:
+            return False, "需要安装 LibreOffice: brew install libreoffice"
         
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {
-                            "text": f"请提取这张PDF页面（第{page_num}页）中的所有文字内容。只输出文字，不要添加任何解释或评论。如果是表格，请用markdown表格格式输出。"
-                        },
-                        {
-                            "inline_data": {
-                                "mime_type": "image/jpeg",
-                                "data": img_base64
-                            }
-                        }
-                    ]
-                }
-            ],
-            "generationConfig": {
-                "maxOutputTokens": 4000
-            }
-        }
-        
-        response = requests.post(url, json=payload, timeout=60)
-        
-        if response.status_code == 200:
-            result = response.json()
-            candidates = result.get("candidates", [])
-            if candidates:
-                parts = candidates[0].get("content", {}).get("parts", [])
-                if parts:
-                    return parts[0].get("text", "")
-        
-        return ""
+        # 创建临时目录
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # 使用 LibreOffice 转换为 txt
+            result = subprocess.run(
+                [soffice_path, '--headless', '--convert-to', 'txt:Text', 
+                 '--outdir', temp_dir, str(file_path)],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            
+            if result.returncode != 0:
+                return False, f"LibreOffice 转换失败: {result.stderr[:100]}"
+            
+            # 读取转换后的文件
+            txt_file = Path(temp_dir) / (file_path.stem + '.txt')
+            if txt_file.exists():
+                content = txt_file.read_text(encoding='utf-8', errors='replace')
+                if content.strip():
+                    return True, content
+                return False, "转换结果为空"
+            else:
+                return False, "转换后的文件不存在"
+                
+    except subprocess.TimeoutExpired:
+        return False, "LibreOffice 转换超时"
     except Exception as e:
-        return ""
-
-
-def call_openai_vision(img_base64: str, page_num: int) -> str:
-    """调用 OpenAI Vision API"""
-    try:
-        base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        
-        headers = {
-            "Authorization": f"Bearer {VISION_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": VISION_MODEL,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"请提取这张PDF页面（第{page_num}页）中的所有文字内容。只输出文字，不要添加任何解释或评论。如果是表格，请用markdown表格格式输出。"
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{img_base64}"
-                            }
-                        }
-                    ]
-                }
-            ],
-            "max_tokens": 4000
-        }
-        
-        response = requests.post(
-            f"{base_url}/chat/completions",
-            headers=headers,
-            json=payload,
-            timeout=60
-        )
-        
-        if response.status_code == 200:
-            result = response.json()
-            return result.get("choices", [{}])[0].get("message", {}).get("content", "")
-        
-        return ""
-    except Exception as e:
-        return ""
+        return False, f"转换错误: {str(e)[:100]}"
 
 
 def try_xlsx_with_pandas(file_path: Path) -> Tuple[bool, str]:
@@ -656,6 +617,18 @@ def sync_directory(
                 continue
             content = content_or_error
             
+        elif ext == '.doc':
+            # .doc 文件使用 LibreOffice 转换
+            ok, content_or_error = convert_doc_with_libreoffice(file_path)
+            if not ok:
+                failed_count += 1
+                errors.append(f"{file_path.name}: {content_or_error}")
+                sync_state.mark_synced(file_path, success=False, error=content_or_error)
+                sync_state.save()
+                log_message(f"转换失败: {file_path.name} - {content_or_error}", "ERROR")
+                continue
+            content = content_or_error
+            
         elif ext in {'.md', '.txt', '.csv'}:
             # 文本文件直接读取（支持多种编码）
             ok, content_or_error = read_text_with_fallback(file_path)
@@ -679,7 +652,7 @@ def sync_directory(
         # 索引文件
         success, error_msg = client.index_file(
             file_path, 
-            content if ext in {'.xlsx', '.xls', '.pptx', '.ppt', '.docx', '.pdf'} else None,
+            content if ext in {'.xlsx', '.xls', '.pptx', '.ppt', '.docx', '.doc', '.pdf'} else None,
             verbose=verbose
         )
         
